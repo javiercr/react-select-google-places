@@ -1,6 +1,6 @@
 # React Select Google Places
 
-__COMPONENT DESCRIPTION GOES HERE__
+This is a Google Places Autocomplete select component based on [React Select](https://jedwatson.github.io/react-select/).
 
 
 ## Demo & Examples
