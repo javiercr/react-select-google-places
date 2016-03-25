@@ -21,7 +21,7 @@ const SelectGooglePlaces = React.createClass({
     return {
       language: 'en',
       country: 'USA',
-      types: ["(cities)"],
+      types: ['(cities)'],
       formatName(placeResult) {
         return placeResult.address_components[0].long_name;
       },
@@ -30,7 +30,7 @@ const SelectGooglePlaces = React.createClass({
         cache: false,
         name: 'places'
       }
-    }
+    };
   },
 
   getInitialState () {
@@ -44,15 +44,15 @@ const SelectGooglePlaces = React.createClass({
   componentDidMount() {
     if (typeof window.google === 'undefined') {
       window.googleMapsLoaded = () => {
-        scriptjs.done('google-maps-places')
-      }
+        scriptjs.done('google-maps-places');
+      };
 
       scriptjs(`https://maps.googleapis.com/maps/api/js?libraries=places&language=${this.props.language}`, 'google-maps-places');
       scriptjs.ready('google-maps-places', () => {
-        this.handleLoaded(google.maps)
-      })
+        this.handleLoaded(google.maps);
+      });
     } else {
-      this.handleLoaded(google.maps)
+      this.handleLoaded(google.maps);
     }
   },
 
