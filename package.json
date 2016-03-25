@@ -2,7 +2,7 @@
   "name": "react-select-google-places",
   "version": "1.0.0",
   "description": "React Select Google Places",
-  "main": "lib/ReactSelectGooglePlaces.js",
+  "main": "lib/SelectGooglePlaces.js",
   "author": "Javier Cuevas",
   "homepage": "https://github.com/javiercr/react-select-google-places",
   "repository": {
