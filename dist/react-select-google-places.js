@@ -1530,7 +1530,7 @@ var SelectGooglePlaces = React.createClass({
     return {
       language: 'en',
       country: 'USA',
-      types: ["(cities)"],
+      types: ['(cities)'],
       formatName: function formatName(placeResult) {
         return placeResult.address_components[0].long_name;
       },
