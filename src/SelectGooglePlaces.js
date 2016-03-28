@@ -75,10 +75,13 @@ const SelectGooglePlaces = React.createClass({
 
     // Once a place is selected, fetch more data for it (long_name, lat, lng, etc.)
     if (selectedPlace) {
-      this.processPlace(selectedPlace, () => this.setState({ value: value }));
-      if (this.props.onChange) {
-        this.props.onChange(value);
-      }
+      this.processPlace(selectedPlace, () => {
+        this.setState({ value: value });
+        if (this.props.onChange) {
+          this.props.onChange(value);
+        }
+      });
+      
     } else {
       this.setState({ value: [] });
       this.props.onChange([]);
