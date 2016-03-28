@@ -85,12 +85,16 @@ const SelectGooglePlaces = React.createClass({
       });
       
     } else {
-      this.setState({ value: [] });
-      this.props.onChange([]);
+      this.setState({ value: value });
+      this.props.onChange(value);
     }
   },
 
   processPlace (autocompletePrediction, callback) {
+    if (!autocompletePrediction.place_id) {
+      callback();
+      return;
+    }
     this.state.placesService.getDetails({placeId: autocompletePrediction.place_id}, (placeResult) => {
       autocompletePrediction = Object.assign(autocompletePrediction, placeResult);
       autocompletePrediction.name = this.props.formatName(placeResult);
