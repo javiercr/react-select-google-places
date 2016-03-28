@@ -10,9 +10,9 @@ var App = React.createClass({
 		return (
 			<div>
         <h2>Demo Single selection</h2>
-        <SelectGooglePlaces optionsForSelect={{multi: false, cache: false}} onChange={this.onChange} />
+        <SelectGooglePlaces optionsForSelect={{multi: false, cache: false}} initialValue={{name: 'New York'}} onChange={this.onChange} />
         <h2>Demo Multiple selection</h2>
-        <SelectGooglePlaces optionsForSelect={{multi: true, cache: false}} onChange={this.onChange} />
+        <SelectGooglePlaces optionsForSelect={{multi: true, cache: false }} initialValue={[{name: 'New York'}, {name: 'Chicago'}]} onChange={this.onChange} />
 			</div>
 		);
 	}

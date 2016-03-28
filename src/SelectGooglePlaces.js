@@ -15,8 +15,8 @@ const SelectGooglePlaces = React.createClass({
     formatName: React.PropTypes.func,         // Receives the result placesService.getDetails() and returns a formatted name
                                               // See https://developers.google.com/maps/documentation/javascript/3.exp/reference#PlaceResult
     onChange: React.PropTypes.func,           // onChange handler: function (newValue) {}
-    optionsForSelect: React.PropTypes.object  // See https://github.com/JedWatson/react-select#further-options
-
+    optionsForSelect: React.PropTypes.object, // See https://github.com/JedWatson/react-select#further-options
+    initialValue: React.PropTypes.any
   },
 
   getDefaultProps () {
@@ -31,13 +31,15 @@ const SelectGooglePlaces = React.createClass({
         multi: true,
         cache: false,
         name: 'places'
-      }
+      },
+      onChange: function(value) {},
+      initialValue: null
     };
   },
 
   getInitialState () {
     return {
-      value: null,
+      value: this.props.initialValue,
       autocompleteService: null,
       placesService: null
     };
@@ -91,7 +93,7 @@ const SelectGooglePlaces = React.createClass({
   processPlace (autocompletePrediction, callback) {
     this.state.placesService.getDetails({placeId: autocompletePrediction.place_id}, (placeResult) => {
       autocompletePrediction = Object.assign(autocompletePrediction, placeResult);
-      autocompletePrediction.description = this.props.formatName(placeResult);
+      autocompletePrediction.name = this.props.formatName(placeResult);
       callback();
     });
   },
@@ -106,6 +108,10 @@ const SelectGooglePlaces = React.createClass({
         }
       };
       this.state.autocompleteService.getPlacePredictions(geocoderRequest, function(data){
+        // Copy description into the name attribute
+        data.map(function(result) {
+          result.name = result.description;
+        });
         callback(null, {options: data, complete: false});
       });  
     }
@@ -115,7 +121,7 @@ const SelectGooglePlaces = React.createClass({
   render () {
     return (
       <div>
-        <Select.Async value={this.state.value} valueKey="description" labelKey="description" loadOptions={this.getPredictions} onChange={this.onChange} {...this.props.optionsForSelect} />
+        <Select.Async value={this.state.value} valueKey="name" labelKey="name" loadOptions={this.getPredictions} onChange={this.onChange} {...this.props.optionsForSelect} />
         <div ref="attributions"></div>
       </div>
     );
