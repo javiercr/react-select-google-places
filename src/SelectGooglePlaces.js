@@ -113,9 +113,11 @@ const SelectGooglePlaces = React.createClass({
       };
       this.state.autocompleteService.getPlacePredictions(geocoderRequest, function(data){
         // Copy description into the name attribute
-        data.map(function(result) {
-          result.name = result.description;
-        });
+        if (data) {
+          data.map(function(result) {
+            result.name = result.description;
+          });  
+        }
         callback(null, {options: data, complete: false});
       });  
     }
