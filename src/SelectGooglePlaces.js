@@ -7,14 +7,16 @@ const SelectGooglePlaces = React.createClass({
   displayName: 'SelectGooglePlaces',
 
   propTypes: {
-    multi: React.PropTypes.bool,            // Single or multiple places selection
-    language: React.PropTypes.string,       // Language code for loading Google Maps API
-    country: React.PropTypes.string,        // ISO 3166-1 Alpha-2 country code for limiting results
-    types: React.PropTypes.array,           // Types of results to be displayed
-                                            // See https://developers.google.com/places/supported_types#table3
-    formatName: React.PropTypes.func,       // Receives the result placesService.getDetails() and returns a formatted name
-                                            // See https://developers.google.com/maps/documentation/javascript/3.exp/reference#PlaceResult
+    multi: React.PropTypes.bool,              // Single or multiple places selection
+    language: React.PropTypes.string,         // Language code for loading Google Maps API
+    country: React.PropTypes.string,          // ISO 3166-1 Alpha-2 country code for limiting results
+    types: React.PropTypes.array,             // Types of results to be displayed
+                                              // See https://developers.google.com/places/supported_types#table3
+    formatName: React.PropTypes.func,         // Receives the result placesService.getDetails() and returns a formatted name
+                                              // See https://developers.google.com/maps/documentation/javascript/3.exp/reference#PlaceResult
+    onChange: React.PropTypes.func,           // onChange handler: function (newValue) {}
     optionsForSelect: React.PropTypes.object  // See https://github.com/JedWatson/react-select#further-options
+
   },
 
   getDefaultProps () {
@@ -74,8 +76,12 @@ const SelectGooglePlaces = React.createClass({
     // Once a place is selected, fetch more data for it (long_name, lat, lng, etc.)
     if (selectedPlace) {
       this.processPlace(selectedPlace, () => this.setState({ value: value }));
+      if (this.props.onChange) {
+        this.props.onChange(value);
+      }
     } else {
       this.setState({ value: [] });
+      this.props.onChange([]);
     }
   },
 
