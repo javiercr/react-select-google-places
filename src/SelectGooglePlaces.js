@@ -69,7 +69,7 @@ const SelectGooglePlaces = React.createClass({
 
   onChange (value) {
     let selectedPlace;
-    if (value.constructor === Array) {
+    if (value && value.constructor === Array) {
       selectedPlace = value[value.length - 1];
     } else {
       selectedPlace = value;

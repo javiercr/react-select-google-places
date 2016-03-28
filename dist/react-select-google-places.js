@@ -1582,7 +1582,7 @@ var SelectGooglePlaces = React.createClass({
     var _this2 = this;
 
     var selectedPlace = undefined;
-    if (value.constructor === Array) {
+    if (value && value.constructor === Array) {
       selectedPlace = value[value.length - 1];
     } else {
       selectedPlace = value;
