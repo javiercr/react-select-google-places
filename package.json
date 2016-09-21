@@ -1,6 +1,6 @@
 {
   "name": "react-select-google-places",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "React Select Google Places",
   "main": "lib/SelectGooglePlaces.js",
   "author": "Javier Cuevas",
@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "classnames": "^2.1.2",
-    "react-select": "^1.0.0-beta11",
+    "react-select": "1.0.0-beta12",
     "scriptjs": "^2.5.8"
   },
   "devDependencies": {
