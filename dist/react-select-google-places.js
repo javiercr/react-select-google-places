@@ -1,4 +1,253 @@
 (function(f){if(typeof exports==="object"&&typeof module!=="undefined"){module.exports=f()}else if(typeof define==="function"&&define.amd){define([],f)}else{var g;if(typeof window!=="undefined"){g=window}else if(typeof global!=="undefined"){g=global}else if(typeof self!=="undefined"){g=self}else{g=this}g.SelectGooglePlaces = f()}})(function(){var define,module,exports;return (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+/**
+ * Script loading is difficult thanks to IE. We need callbacks to fire
+ * immediately following the script's execution, with no other scripts
+ * running in between. If other scripts on the page are able to run
+ * between our script and its callback, bad things can happen, such as
+ * `jQuery.noConflict` not being called in time, resulting in plugins
+ * latching onto our version of jQuery, etc.
+ *
+ * For IE<10 we use a relatively well-documented "preloading" strategy,
+ * which ensures that the script is ready to execute *before* appending
+ * it to the DOM. That way when it is finally appended, it is
+ * executed immediately.
+ *
+ * References:
+ * - http://www.html5rocks.com/en/tutorials/speed/script-loading/
+ * - http://blog.getify.com/ie11-please-bring-real-script-preloading-back/
+ * - https://github.com/jrburke/requirejs/issues/526
+ * - https://connect.microsoft.com/IE/feedback/details/729164/
+ *           ie10-dynamic-script-element-fires-loaded-readystate-prematurely
+ */
+(function () {
+
+  // Global state.
+  var pendingScripts = {};
+  var scriptCounter = 0;
+
+  /**
+   * Insert script into the DOM
+   *
+   * @param {Object} script Script DOM object
+   * @returns {void}
+   */
+  var _addScript = function (script) {
+    // Get the first script element, we're just going to use it
+    // as a reference for where to insert ours. Do NOT try to do
+    // this just once at the top and then re-use the same script
+    // as a reference later. Some weird loaders *remove* script
+    // elements after the browser has executed their contents,
+    // so the same reference might not have a parentNode later.
+    var firstScript = document.getElementsByTagName("script")[0];
+
+    // Append the script to the DOM, triggering execution.
+    firstScript.parentNode.insertBefore(script, firstScript);
+  };
+
+  /**
+   * Load Script.
+   *
+   * @param {String}            src       URI of script
+   * @param {Function|Object}   callback  (Optional) Called on script load completion,
+   *                                      or options object
+   * @param {Object}            context   (Optional) Callback context (`this`)
+   * @returns {void}
+   */
+  var _lload = function (src, callback, context) {
+    /*eslint max-statements: [2, 32]*/
+    var setup;
+
+    if (callback && typeof callback !== "function") {
+      context = callback.context || context;
+      setup = callback.setup;
+      callback = callback.callback;
+    }
+
+    var script = document.createElement("script");
+    var done = false;
+    var err;
+    var _cleanup; // _must_ be set below.
+
+    /**
+     * Final handler for error or completion.
+     *
+     * **Note**: Will only be called _once_.
+     *
+     * @returns {void}
+     */
+    var _finish = function () {
+      // Only call once.
+      if (done) { return; }
+      done = true;
+
+      // Internal cleanup.
+      _cleanup();
+
+      // Callback.
+      if (callback) {
+        callback.call(context, err);
+      }
+    };
+
+    /**
+     * Error handler
+     *
+     * @returns {void}
+     */
+    var _error = function () {
+      err = new Error(src || "EMPTY");
+      _finish();
+    };
+
+    if (script.readyState && !("async" in script)) {
+      /*eslint-disable consistent-return*/
+
+      // This section is only for IE<10. Some other old browsers may
+      // satisfy the above condition and enter this branch, but we don't
+      // support those browsers anyway.
+
+      var id = scriptCounter++;
+      var isReady = { loaded: true, complete: true };
+      var inserted = false;
+
+      // Clear out listeners, state.
+      _cleanup = function () {
+        script.onreadystatechange = script.onerror = null;
+        pendingScripts[id] = void 0;
+      };
+
+      // Attach the handler before setting src, otherwise we might
+      // miss events (consider that IE could fire them synchronously
+      // upon setting src, for example).
+      script.onreadystatechange = function () {
+        var firstState = script.readyState;
+
+        // Protect against any errors from state change randomness.
+        if (err) { return; }
+
+        if (!inserted && isReady[firstState]) {
+          inserted = true;
+
+          // Append to DOM.
+          _addScript(script);
+        }
+
+        // --------------------------------------------------------------------
+        //                       GLORIOUS IE8 HACKAGE!!!
+        // --------------------------------------------------------------------
+        //
+        // Oh IE8, how you disappoint. IE8 won't call `script.onerror`, so
+        // we have to resort to drastic measures.
+        // See, e.g. http://www.quirksmode.org/dom/events/error.html#t02
+        //
+        // As with all things development, there's a Stack Overflow comment that
+        // asserts the following combinations of state changes in IE8 indicate a
+        // script load error. And crazily, it seems to work!
+        //
+        // http://stackoverflow.com/a/18840568/741892
+        //
+        // The `script.readyState` transitions we're interested are:
+        //
+        // * If state starts as `loaded`
+        // * Call `script.children`, which _should_ change state to `complete`
+        // * If state is now `loading`, then **we have a load error**
+        //
+        // For the reader's amusement, here is HeadJS's catalog of various
+        // `readyState` transitions in normal operation for IE:
+        // https://github.com/headjs/headjs/blob/master/src/2.0.0/load.js#L379-L419
+        if (firstState === "loaded") {
+          // The act of accessing the property should change the script's
+          // `readyState`.
+          //
+          // And, oh yeah, this hack is so hacky-ish we need the following
+          // eslint disable...
+          /*eslint-disable no-unused-expressions*/
+          script.children;
+          /*eslint-enable no-unused-expressions*/
+
+          if (script.readyState === "loading") {
+            // State transitions indicate we've hit the load error.
+            //
+            // **Note**: We are not intending to _return_ a value, just have
+            // a shorter short-circuit code path here.
+            return _error();
+          }
+        }
+
+        // It's possible for readyState to be "complete" immediately
+        // after we insert (and execute) the script in the branch
+        // above. So check readyState again here and react without
+        // waiting for another onreadystatechange.
+        if (script.readyState === "complete") {
+          _finish();
+        }
+      };
+
+      // Onerror handler _may_ work here.
+      script.onerror = _error;
+
+      // Since we're not appending the script to the DOM yet, the
+      // reference to our script element might get garbage collected
+      // when this function ends, without onreadystatechange ever being
+      // fired. This has been witnessed to happen. Adding it to
+      // `pendingScripts` ensures this can't happen.
+      pendingScripts[id] = script;
+
+      // call the setup callback to mutate the script tag
+      if (setup) {
+        setup.call(context, script);
+      }
+
+      // This triggers a request for the script, but its contents won't
+      // be executed until we append it to the DOM.
+      script.src = src;
+
+      // In some cases, the readyState is already "loaded" immediately
+      // after setting src. It's a lie! Don't append to the DOM until
+      // the onreadystatechange event says so.
+
+    } else {
+      // This section is for modern browsers, including IE10+.
+
+      // Clear out listeners.
+      _cleanup = function () {
+        script.onload = script.onerror = null;
+      };
+
+      script.onerror = _error;
+      script.onload = _finish;
+      script.async = true;
+      script.charset = "utf-8";
+
+      // call the setup callback to mutate the script tag
+      if (setup) {
+        setup.call(context, script);
+      }
+
+      script.src = src;
+
+      // Append to DOM.
+      _addScript(script);
+    }
+  };
+
+  // UMD wrapper.
+  /*global define:false*/
+  if (typeof exports === "object" && typeof module === "object") {
+    // CommonJS
+    module.exports = _lload;
+
+  } else if (typeof define === "function" && define.amd) {
+    // AMD
+    define([], function () { return _lload; });
+
+  } else {
+    // VanillaJS
+    window._lload = _lload;
+  }
+}());
+
+},{}],2:[function(require,module,exports){
 'use strict';
 
 var _extends = Object.assign || function (target) { for (var i = 1; i < arguments.length; i++) { var source = arguments[i]; for (var key in source) { if (Object.prototype.hasOwnProperty.call(source, key)) { target[key] = source[key]; } } } return target; };
@@ -42,13 +291,16 @@ var AutosizeInput = React.createClass({
 		this.updateInputWidth();
 	},
 	componentDidUpdate: function componentDidUpdate() {
-		this.queueUpdateInputWidth();
+		this.updateInputWidth();
 	},
 	copyInputStyles: function copyInputStyles() {
 		if (!this.isMounted() || !window.getComputedStyle) {
 			return;
 		}
 		var inputStyle = window.getComputedStyle(this.refs.input);
+		if (!inputStyle) {
+			return;
+		}
 		var widthNode = this.refs.sizer;
 		widthNode.style.fontSize = inputStyle.fontSize;
 		widthNode.style.fontFamily = inputStyle.fontFamily;
@@ -63,9 +315,6 @@ var AutosizeInput = React.createClass({
 			placeholderNode.style.fontStyle = inputStyle.fontStyle;
 			placeholderNode.style.letterSpacing = inputStyle.letterSpacing;
 		}
-	},
-	queueUpdateInputWidth: function queueUpdateInputWidth() {
-		nextFrame(this.updateInputWidth);
 	},
 	updateInputWidth: function updateInputWidth() {
 		if (!this.isMounted() || typeof this.refs.sizer.scrollWidth === 'undefined') {
@@ -125,7 +374,7 @@ var AutosizeInput = React.createClass({
 });
 
 module.exports = AutosizeInput;
-},{"react":undefined}],2:[function(require,module,exports){
+},{"react":undefined}],3:[function(require,module,exports){
 'use strict';
 
 var _extends = Object.assign || function (target) { for (var i = 1; i < arguments.length; i++) { var source = arguments[i]; for (var key in source) { if (Object.prototype.hasOwnProperty.call(source, key)) { target[key] = source[key]; } } } return target; };
@@ -294,7 +543,7 @@ var Async = _react2['default'].createClass({
 });
 
 module.exports = Async;
-},{"./Select":4,"./utils/stripDiacritics":6,"react":undefined}],3:[function(require,module,exports){
+},{"./Select":5,"./utils/stripDiacritics":7,"react":undefined}],4:[function(require,module,exports){
 'use strict';
 
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { 'default': obj }; }
@@ -399,7 +648,7 @@ var Option = _react2['default'].createClass({
 });
 
 module.exports = Option;
-},{"classnames":undefined,"react":undefined}],4:[function(require,module,exports){
+},{"classnames":undefined,"react":undefined}],5:[function(require,module,exports){
 'use strict';
 
 Object.defineProperty(exports, '__esModule', {
@@ -461,6 +710,7 @@ var Select = _react2['default'].createClass({
 		allowCreate: _react2['default'].PropTypes.bool, // whether to allow creation of new entries
 		autoBlur: _react2['default'].PropTypes.bool,
 		autofocus: _react2['default'].PropTypes.bool, // autofocus the component on mount
+		autosize: _react2['default'].PropTypes.bool, // whether to enable autosizing or not
 		backspaceRemoves: _react2['default'].PropTypes.bool, // whether backspace removes an item if there is no text input
 		className: _react2['default'].PropTypes.string, // className for the outer element
 		clearAllText: stringOrNode, // title for the "clear" control when multi: true
@@ -475,11 +725,13 @@ var Select = _react2['default'].createClass({
 		ignoreCase: _react2['default'].PropTypes.bool, // whether to perform case-insensitive filtering
 		inputProps: _react2['default'].PropTypes.object, // custom attributes for the Input
 		isLoading: _react2['default'].PropTypes.bool, // whether the Select is loading externally or not (such as options being loaded)
+		joinValues: _react2['default'].PropTypes.bool, // joins multiple values into a single form field with the delimiter (legacy mode)
 		labelKey: _react2['default'].PropTypes.string, // path of the label value in option objects
 		matchPos: _react2['default'].PropTypes.string, // (any|start) match the start or entire string when filtering
 		matchProp: _react2['default'].PropTypes.string, // (any|label|value) which option property to filter on
 		menuBuffer: _react2['default'].PropTypes.number, // optional buffer (in px) between the bottom of the viewport and the bottom of the menu
 		menuContainerStyle: _react2['default'].PropTypes.object, // optional style to apply to the menu container
+		menuRenderer: _react2['default'].PropTypes.func, // renders a custom menu with options
 		menuStyle: _react2['default'].PropTypes.object, // optional style to apply to the menu
 		multi: _react2['default'].PropTypes.bool, // multi-value input
 		name: _react2['default'].PropTypes.string, // generates a hidden <input /> tag with this field name for html forms
@@ -494,6 +746,8 @@ var Select = _react2['default'].createClass({
 		onMenuScrollToBottom: _react2['default'].PropTypes.func, // fires when the menu is scrolled to the bottom; can be used to paginate options
 		onOpen: _react2['default'].PropTypes.func, // fires when the menu is opened
 		onValueClick: _react2['default'].PropTypes.func, // onClick handler for value labels: function (value, event) {}
+		openAfterFocus: _react2['default'].PropTypes.bool, // boolean to enable opening dropdown when focused
+		optionClassName: _react2['default'].PropTypes.string, // additional class(es) to apply to the <Option /> elements
 		optionComponent: _react2['default'].PropTypes.func, // option component to render in dropdown
 		optionRenderer: _react2['default'].PropTypes.func, // optionRenderer: function (option) {}
 		options: _react2['default'].PropTypes.array, // array of options
@@ -516,6 +770,7 @@ var Select = _react2['default'].createClass({
 	getDefaultProps: function getDefaultProps() {
 		return {
 			addLabelText: 'Add "{label}"?',
+			autosize: true,
 			allowCreate: false,
 			backspaceRemoves: true,
 			clearable: true,
@@ -529,6 +784,7 @@ var Select = _react2['default'].createClass({
 			ignoreCase: true,
 			inputProps: {},
 			isLoading: false,
+			joinValues: false,
 			labelKey: 'label',
 			matchPos: 'any',
 			matchProp: 'any',
@@ -536,6 +792,7 @@ var Select = _react2['default'].createClass({
 			multi: false,
 			noResultsText: 'No results found',
 			onBlurResetsInput: true,
+			openAfterFocus: false,
 			optionComponent: _Option2['default'],
 			placeholder: 'Select...',
 			required: false,
@@ -561,6 +818,14 @@ var Select = _react2['default'].createClass({
 	componentDidMount: function componentDidMount() {
 		if (this.props.autofocus) {
 			this.focus();
+		}
+	},
+
+	componentWillReceiveProps: function componentWillReceiveProps(nextProps) {
+		if (this.props.value !== nextProps.value && nextProps.required) {
+			this.setState({
+				required: this.handleRequired(nextProps.value, nextProps.multi)
+			});
 		}
 	},
 
@@ -609,6 +874,12 @@ var Select = _react2['default'].createClass({
 	focus: function focus() {
 		if (!this.refs.input) return;
 		this.refs.input.focus();
+
+		if (this.props.openAfterFocus) {
+			this.setState({
+				isOpen: true
+			});
+		}
 	},
 
 	blurInput: function blurInput() {
@@ -1050,17 +1321,32 @@ var Select = _react2['default'].createClass({
 				ref: 'input',
 				style: { border: 0, width: 1, display: 'inline-block' } }));
 		}
-		return _react2['default'].createElement(_reactInputAutosize2['default'], _extends({}, this.props.inputProps, {
-			className: className,
-			tabIndex: this.props.tabIndex,
-			onBlur: this.handleInputBlur,
-			onChange: this.handleInputChange,
-			onFocus: this.handleInputFocus,
-			minWidth: '5',
-			ref: 'input',
-			required: this.state.required,
-			value: this.state.inputValue
-		}));
+		if (this.props.autosize) {
+			return _react2['default'].createElement(_reactInputAutosize2['default'], _extends({}, this.props.inputProps, {
+				className: className,
+				tabIndex: this.props.tabIndex,
+				onBlur: this.handleInputBlur,
+				onChange: this.handleInputChange,
+				onFocus: this.handleInputFocus,
+				minWidth: '5',
+				ref: 'input',
+				required: this.state.required,
+				value: this.state.inputValue
+			}));
+		}
+		return _react2['default'].createElement(
+			'div',
+			{ className: className },
+			_react2['default'].createElement('input', _extends({}, this.props.inputProps, {
+				tabIndex: this.props.tabIndex,
+				onBlur: this.handleInputBlur,
+				onChange: this.handleInputChange,
+				onFocus: this.handleInputFocus,
+				ref: 'input',
+				required: this.state.required,
+				value: this.state.inputValue
+			}))
+		);
 	},
 
 	renderClear: function renderClear() {
@@ -1127,42 +1413,53 @@ var Select = _react2['default'].createClass({
 		var _this4 = this;
 
 		if (options && options.length) {
-			var _ret = (function () {
-				var Option = _this4.props.optionComponent;
-				var renderLabel = _this4.props.optionRenderer || _this4.getOptionLabel;
+			if (this.props.menuRenderer) {
+				return this.props.menuRenderer({
+					focusedOption: focusedOption,
+					focusOption: this.focusOption,
+					labelKey: this.props.labelKey,
+					options: options,
+					selectValue: this.selectValue,
+					valueArray: valueArray
+				});
+			} else {
+				var _ret = (function () {
+					var Option = _this4.props.optionComponent;
+					var renderLabel = _this4.props.optionRenderer || _this4.getOptionLabel;
 
-				return {
-					v: options.map(function (option, i) {
-						var isSelected = valueArray && valueArray.indexOf(option) > -1;
-						var isFocused = option === focusedOption;
-						var optionRef = isFocused ? 'focused' : null;
-						var optionClass = (0, _classnames2['default'])({
-							'Select-option': true,
-							'is-selected': isSelected,
-							'is-focused': isFocused,
-							'is-disabled': option.disabled
-						});
+					return {
+						v: options.map(function (option, i) {
+							var isSelected = valueArray && valueArray.indexOf(option) > -1;
+							var isFocused = option === focusedOption;
+							var optionRef = isFocused ? 'focused' : null;
+							var optionClass = (0, _classnames2['default'])(_this4.props.optionClassName, {
+								'Select-option': true,
+								'is-selected': isSelected,
+								'is-focused': isFocused,
+								'is-disabled': option.disabled
+							});
 
-						return _react2['default'].createElement(
-							Option,
-							{
-								className: optionClass,
-								isDisabled: option.disabled,
-								isFocused: isFocused,
-								key: 'option-' + i + '-' + option[_this4.props.valueKey],
-								onSelect: _this4.selectValue,
-								onFocus: _this4.focusOption,
-								option: option,
-								isSelected: isSelected,
-								ref: optionRef
-							},
-							renderLabel(option)
-						);
-					})
-				};
-			})();
+							return _react2['default'].createElement(
+								Option,
+								{
+									className: optionClass,
+									isDisabled: option.disabled,
+									isFocused: isFocused,
+									key: 'option-' + i + '-' + option[_this4.props.valueKey],
+									onSelect: _this4.selectValue,
+									onFocus: _this4.focusOption,
+									option: option,
+									isSelected: isSelected,
+									ref: optionRef
+								},
+								renderLabel(option)
+							);
+						})
+					};
+				})();
 
-			if (typeof _ret === 'object') return _ret.v;
+				if (typeof _ret === 'object') return _ret.v;
+			}
 		} else if (this.props.noResultsText) {
 			return _react2['default'].createElement(
 				'div',
@@ -1178,10 +1475,25 @@ var Select = _react2['default'].createClass({
 		var _this5 = this;
 
 		if (!this.props.name) return;
-		var value = valueArray.map(function (i) {
-			return stringifyValue(i[_this5.props.valueKey]);
-		}).join(this.props.delimiter);
-		return _react2['default'].createElement('input', { type: 'hidden', ref: 'value', name: this.props.name, value: value, disabled: this.props.disabled });
+		if (this.props.joinValues) {
+			var value = valueArray.map(function (i) {
+				return stringifyValue(i[_this5.props.valueKey]);
+			}).join(this.props.delimiter);
+			return _react2['default'].createElement('input', {
+				type: 'hidden',
+				ref: 'value',
+				name: this.props.name,
+				value: value,
+				disabled: this.props.disabled });
+		}
+		return valueArray.map(function (item, index) {
+			return _react2['default'].createElement('input', { key: 'hidden.' + index,
+				type: 'hidden',
+				ref: 'value' + index,
+				name: _this5.props.name,
+				value: stringifyValue(item[_this5.props.valueKey]),
+				disabled: _this5.props.disabled });
+		});
 	},
 
 	getFocusableOption: function getFocusableOption(selectedOption) {
@@ -1249,7 +1561,7 @@ var Select = _react2['default'].createClass({
 
 exports['default'] = Select;
 module.exports = exports['default'];
-},{"./Async":2,"./Option":3,"./Value":5,"./utils/stripDiacritics":6,"classnames":undefined,"react":undefined,"react-dom":undefined,"react-input-autosize":1}],5:[function(require,module,exports){
+},{"./Async":3,"./Option":4,"./Value":6,"./utils/stripDiacritics":7,"classnames":undefined,"react":undefined,"react-dom":undefined,"react-input-autosize":2}],6:[function(require,module,exports){
 'use strict';
 
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { 'default': obj }; }
@@ -1354,7 +1666,7 @@ var Value = _react2['default'].createClass({
 });
 
 module.exports = Value;
-},{"classnames":undefined,"react":undefined}],6:[function(require,module,exports){
+},{"classnames":undefined,"react":undefined}],7:[function(require,module,exports){
 'use strict';
 
 var map = [{ 'base': 'A', 'letters': /[\u0041\u24B6\uFF21\u00C0\u00C1\u00C2\u1EA6\u1EA4\u1EAA\u1EA8\u00C3\u0100\u0102\u1EB0\u1EAE\u1EB4\u1EB2\u0226\u01E0\u00C4\u01DE\u1EA2\u00C5\u01FA\u01CD\u0200\u0202\u1EA0\u1EAC\u1EB6\u1E00\u0104\u023A\u2C6F]/g }, { 'base': 'AA', 'letters': /[\uA732]/g }, { 'base': 'AE', 'letters': /[\u00C6\u01FC\u01E2]/g }, { 'base': 'AO', 'letters': /[\uA734]/g }, { 'base': 'AU', 'letters': /[\uA736]/g }, { 'base': 'AV', 'letters': /[\uA738\uA73A]/g }, { 'base': 'AY', 'letters': /[\uA73C]/g }, { 'base': 'B', 'letters': /[\u0042\u24B7\uFF22\u1E02\u1E04\u1E06\u0243\u0182\u0181]/g }, { 'base': 'C', 'letters': /[\u0043\u24B8\uFF23\u0106\u0108\u010A\u010C\u00C7\u1E08\u0187\u023B\uA73E]/g }, { 'base': 'D', 'letters': /[\u0044\u24B9\uFF24\u1E0A\u010E\u1E0C\u1E10\u1E12\u1E0E\u0110\u018B\u018A\u0189\uA779]/g }, { 'base': 'DZ', 'letters': /[\u01F1\u01C4]/g }, { 'base': 'Dz', 'letters': /[\u01F2\u01C5]/g }, { 'base': 'E', 'letters': /[\u0045\u24BA\uFF25\u00C8\u00C9\u00CA\u1EC0\u1EBE\u1EC4\u1EC2\u1EBC\u0112\u1E14\u1E16\u0114\u0116\u00CB\u1EBA\u011A\u0204\u0206\u1EB8\u1EC6\u0228\u1E1C\u0118\u1E18\u1E1A\u0190\u018E]/g }, { 'base': 'F', 'letters': /[\u0046\u24BB\uFF26\u1E1E\u0191\uA77B]/g }, { 'base': 'G', 'letters': /[\u0047\u24BC\uFF27\u01F4\u011C\u1E20\u011E\u0120\u01E6\u0122\u01E4\u0193\uA7A0\uA77D\uA77E]/g }, { 'base': 'H', 'letters': /[\u0048\u24BD\uFF28\u0124\u1E22\u1E26\u021E\u1E24\u1E28\u1E2A\u0126\u2C67\u2C75\uA78D]/g }, { 'base': 'I', 'letters': /[\u0049\u24BE\uFF29\u00CC\u00CD\u00CE\u0128\u012A\u012C\u0130\u00CF\u1E2E\u1EC8\u01CF\u0208\u020A\u1ECA\u012E\u1E2C\u0197]/g }, { 'base': 'J', 'letters': /[\u004A\u24BF\uFF2A\u0134\u0248]/g }, { 'base': 'K', 'letters': /[\u004B\u24C0\uFF2B\u1E30\u01E8\u1E32\u0136\u1E34\u0198\u2C69\uA740\uA742\uA744\uA7A2]/g }, { 'base': 'L', 'letters': /[\u004C\u24C1\uFF2C\u013F\u0139\u013D\u1E36\u1E38\u013B\u1E3C\u1E3A\u0141\u023D\u2C62\u2C60\uA748\uA746\uA780]/g }, { 'base': 'LJ', 'letters': /[\u01C7]/g }, { 'base': 'Lj', 'letters': /[\u01C8]/g }, { 'base': 'M', 'letters': /[\u004D\u24C2\uFF2D\u1E3E\u1E40\u1E42\u2C6E\u019C]/g }, { 'base': 'N', 'letters': /[\u004E\u24C3\uFF2E\u01F8\u0143\u00D1\u1E44\u0147\u1E46\u0145\u1E4A\u1E48\u0220\u019D\uA790\uA7A4]/g }, { 'base': 'NJ', 'letters': /[\u01CA]/g }, { 'base': 'Nj', 'letters': /[\u01CB]/g }, { 'base': 'O', 'letters': /[\u004F\u24C4\uFF2F\u00D2\u00D3\u00D4\u1ED2\u1ED0\u1ED6\u1ED4\u00D5\u1E4C\u022C\u1E4E\u014C\u1E50\u1E52\u014E\u022E\u0230\u00D6\u022A\u1ECE\u0150\u01D1\u020C\u020E\u01A0\u1EDC\u1EDA\u1EE0\u1EDE\u1EE2\u1ECC\u1ED8\u01EA\u01EC\u00D8\u01FE\u0186\u019F\uA74A\uA74C]/g }, { 'base': 'OI', 'letters': /[\u01A2]/g }, { 'base': 'OO', 'letters': /[\uA74E]/g }, { 'base': 'OU', 'letters': /[\u0222]/g }, { 'base': 'P', 'letters': /[\u0050\u24C5\uFF30\u1E54\u1E56\u01A4\u2C63\uA750\uA752\uA754]/g }, { 'base': 'Q', 'letters': /[\u0051\u24C6\uFF31\uA756\uA758\u024A]/g }, { 'base': 'R', 'letters': /[\u0052\u24C7\uFF32\u0154\u1E58\u0158\u0210\u0212\u1E5A\u1E5C\u0156\u1E5E\u024C\u2C64\uA75A\uA7A6\uA782]/g }, { 'base': 'S', 'letters': /[\u0053\u24C8\uFF33\u1E9E\u015A\u1E64\u015C\u1E60\u0160\u1E66\u1E62\u1E68\u0218\u015E\u2C7E\uA7A8\uA784]/g }, { 'base': 'T', 'letters': /[\u0054\u24C9\uFF34\u1E6A\u0164\u1E6C\u021A\u0162\u1E70\u1E6E\u0166\u01AC\u01AE\u023E\uA786]/g }, { 'base': 'TZ', 'letters': /[\uA728]/g }, { 'base': 'U', 'letters': /[\u0055\u24CA\uFF35\u00D9\u00DA\u00DB\u0168\u1E78\u016A\u1E7A\u016C\u00DC\u01DB\u01D7\u01D5\u01D9\u1EE6\u016E\u0170\u01D3\u0214\u0216\u01AF\u1EEA\u1EE8\u1EEE\u1EEC\u1EF0\u1EE4\u1E72\u0172\u1E76\u1E74\u0244]/g }, { 'base': 'V', 'letters': /[\u0056\u24CB\uFF36\u1E7C\u1E7E\u01B2\uA75E\u0245]/g }, { 'base': 'VY', 'letters': /[\uA760]/g }, { 'base': 'W', 'letters': /[\u0057\u24CC\uFF37\u1E80\u1E82\u0174\u1E86\u1E84\u1E88\u2C72]/g }, { 'base': 'X', 'letters': /[\u0058\u24CD\uFF38\u1E8A\u1E8C]/g }, { 'base': 'Y', 'letters': /[\u0059\u24CE\uFF39\u1EF2\u00DD\u0176\u1EF8\u0232\u1E8E\u0178\u1EF6\u1EF4\u01B3\u024E\u1EFE]/g }, { 'base': 'Z', 'letters': /[\u005A\u24CF\uFF3A\u0179\u1E90\u017B\u017D\u1E92\u1E94\u01B5\u0224\u2C7F\u2C6B\uA762]/g }, { 'base': 'a', 'letters': /[\u0061\u24D0\uFF41\u1E9A\u00E0\u00E1\u00E2\u1EA7\u1EA5\u1EAB\u1EA9\u00E3\u0101\u0103\u1EB1\u1EAF\u1EB5\u1EB3\u0227\u01E1\u00E4\u01DF\u1EA3\u00E5\u01FB\u01CE\u0201\u0203\u1EA1\u1EAD\u1EB7\u1E01\u0105\u2C65\u0250]/g }, { 'base': 'aa', 'letters': /[\uA733]/g }, { 'base': 'ae', 'letters': /[\u00E6\u01FD\u01E3]/g }, { 'base': 'ao', 'letters': /[\uA735]/g }, { 'base': 'au', 'letters': /[\uA737]/g }, { 'base': 'av', 'letters': /[\uA739\uA73B]/g }, { 'base': 'ay', 'letters': /[\uA73D]/g }, { 'base': 'b', 'letters': /[\u0062\u24D1\uFF42\u1E03\u1E05\u1E07\u0180\u0183\u0253]/g }, { 'base': 'c', 'letters': /[\u0063\u24D2\uFF43\u0107\u0109\u010B\u010D\u00E7\u1E09\u0188\u023C\uA73F\u2184]/g }, { 'base': 'd', 'letters': /[\u0064\u24D3\uFF44\u1E0B\u010F\u1E0D\u1E11\u1E13\u1E0F\u0111\u018C\u0256\u0257\uA77A]/g }, { 'base': 'dz', 'letters': /[\u01F3\u01C6]/g }, { 'base': 'e', 'letters': /[\u0065\u24D4\uFF45\u00E8\u00E9\u00EA\u1EC1\u1EBF\u1EC5\u1EC3\u1EBD\u0113\u1E15\u1E17\u0115\u0117\u00EB\u1EBB\u011B\u0205\u0207\u1EB9\u1EC7\u0229\u1E1D\u0119\u1E19\u1E1B\u0247\u025B\u01DD]/g }, { 'base': 'f', 'letters': /[\u0066\u24D5\uFF46\u1E1F\u0192\uA77C]/g }, { 'base': 'g', 'letters': /[\u0067\u24D6\uFF47\u01F5\u011D\u1E21\u011F\u0121\u01E7\u0123\u01E5\u0260\uA7A1\u1D79\uA77F]/g }, { 'base': 'h', 'letters': /[\u0068\u24D7\uFF48\u0125\u1E23\u1E27\u021F\u1E25\u1E29\u1E2B\u1E96\u0127\u2C68\u2C76\u0265]/g }, { 'base': 'hv', 'letters': /[\u0195]/g }, { 'base': 'i', 'letters': /[\u0069\u24D8\uFF49\u00EC\u00ED\u00EE\u0129\u012B\u012D\u00EF\u1E2F\u1EC9\u01D0\u0209\u020B\u1ECB\u012F\u1E2D\u0268\u0131]/g }, { 'base': 'j', 'letters': /[\u006A\u24D9\uFF4A\u0135\u01F0\u0249]/g }, { 'base': 'k', 'letters': /[\u006B\u24DA\uFF4B\u1E31\u01E9\u1E33\u0137\u1E35\u0199\u2C6A\uA741\uA743\uA745\uA7A3]/g }, { 'base': 'l', 'letters': /[\u006C\u24DB\uFF4C\u0140\u013A\u013E\u1E37\u1E39\u013C\u1E3D\u1E3B\u017F\u0142\u019A\u026B\u2C61\uA749\uA781\uA747]/g }, { 'base': 'lj', 'letters': /[\u01C9]/g }, { 'base': 'm', 'letters': /[\u006D\u24DC\uFF4D\u1E3F\u1E41\u1E43\u0271\u026F]/g }, { 'base': 'n', 'letters': /[\u006E\u24DD\uFF4E\u01F9\u0144\u00F1\u1E45\u0148\u1E47\u0146\u1E4B\u1E49\u019E\u0272\u0149\uA791\uA7A5]/g }, { 'base': 'nj', 'letters': /[\u01CC]/g }, { 'base': 'o', 'letters': /[\u006F\u24DE\uFF4F\u00F2\u00F3\u00F4\u1ED3\u1ED1\u1ED7\u1ED5\u00F5\u1E4D\u022D\u1E4F\u014D\u1E51\u1E53\u014F\u022F\u0231\u00F6\u022B\u1ECF\u0151\u01D2\u020D\u020F\u01A1\u1EDD\u1EDB\u1EE1\u1EDF\u1EE3\u1ECD\u1ED9\u01EB\u01ED\u00F8\u01FF\u0254\uA74B\uA74D\u0275]/g }, { 'base': 'oi', 'letters': /[\u01A3]/g }, { 'base': 'ou', 'letters': /[\u0223]/g }, { 'base': 'oo', 'letters': /[\uA74F]/g }, { 'base': 'p', 'letters': /[\u0070\u24DF\uFF50\u1E55\u1E57\u01A5\u1D7D\uA751\uA753\uA755]/g }, { 'base': 'q', 'letters': /[\u0071\u24E0\uFF51\u024B\uA757\uA759]/g }, { 'base': 'r', 'letters': /[\u0072\u24E1\uFF52\u0155\u1E59\u0159\u0211\u0213\u1E5B\u1E5D\u0157\u1E5F\u024D\u027D\uA75B\uA7A7\uA783]/g }, { 'base': 's', 'letters': /[\u0073\u24E2\uFF53\u00DF\u015B\u1E65\u015D\u1E61\u0161\u1E67\u1E63\u1E69\u0219\u015F\u023F\uA7A9\uA785\u1E9B]/g }, { 'base': 't', 'letters': /[\u0074\u24E3\uFF54\u1E6B\u1E97\u0165\u1E6D\u021B\u0163\u1E71\u1E6F\u0167\u01AD\u0288\u2C66\uA787]/g }, { 'base': 'tz', 'letters': /[\uA729]/g }, { 'base': 'u', 'letters': /[\u0075\u24E4\uFF55\u00F9\u00FA\u00FB\u0169\u1E79\u016B\u1E7B\u016D\u00FC\u01DC\u01D8\u01D6\u01DA\u1EE7\u016F\u0171\u01D4\u0215\u0217\u01B0\u1EEB\u1EE9\u1EEF\u1EED\u1EF1\u1EE5\u1E73\u0173\u1E77\u1E75\u0289]/g }, { 'base': 'v', 'letters': /[\u0076\u24E5\uFF56\u1E7D\u1E7F\u028B\uA75F\u028C]/g }, { 'base': 'vy', 'letters': /[\uA761]/g }, { 'base': 'w', 'letters': /[\u0077\u24E6\uFF57\u1E81\u1E83\u0175\u1E87\u1E85\u1E98\u1E89\u2C73]/g }, { 'base': 'x', 'letters': /[\u0078\u24E7\uFF58\u1E8B\u1E8D]/g }, { 'base': 'y', 'letters': /[\u0079\u24E8\uFF59\u1EF3\u00FD\u0177\u1EF9\u0233\u1E8F\u00FF\u1EF7\u1E99\u1EF5\u01B4\u024F\u1EFF]/g }, { 'base': 'z', 'letters': /[\u007A\u24E9\uFF5A\u017A\u1E91\u017C\u017E\u1E93\u1E95\u01B6\u0225\u0240\u2C6C\uA763]/g }];
@@ -1365,131 +1677,6 @@ module.exports = function stripDiacritics(str) {
 	}
 	return str;
 };
-},{}],7:[function(require,module,exports){
-/*!
-  * $script.js JS loader & dependency manager
-  * https://github.com/ded/script.js
-  * (c) Dustin Diaz 2014 | License MIT
-  */
-
-(function (name, definition) {
-  if (typeof module != 'undefined' && module.exports) module.exports = definition()
-  else if (typeof define == 'function' && define.amd) define(definition)
-  else this[name] = definition()
-})('$script', function () {
-  var doc = document
-    , head = doc.getElementsByTagName('head')[0]
-    , s = 'string'
-    , f = false
-    , push = 'push'
-    , readyState = 'readyState'
-    , onreadystatechange = 'onreadystatechange'
-    , list = {}
-    , ids = {}
-    , delay = {}
-    , scripts = {}
-    , scriptpath
-    , urlArgs
-
-  function every(ar, fn) {
-    for (var i = 0, j = ar.length; i < j; ++i) if (!fn(ar[i])) return f
-    return 1
-  }
-  function each(ar, fn) {
-    every(ar, function (el) {
-      return !fn(el)
-    })
-  }
-
-  function $script(paths, idOrDone, optDone) {
-    paths = paths[push] ? paths : [paths]
-    var idOrDoneIsDone = idOrDone && idOrDone.call
-      , done = idOrDoneIsDone ? idOrDone : optDone
-      , id = idOrDoneIsDone ? paths.join('') : idOrDone
-      , queue = paths.length
-    function loopFn(item) {
-      return item.call ? item() : list[item]
-    }
-    function callback() {
-      if (!--queue) {
-        list[id] = 1
-        done && done()
-        for (var dset in delay) {
-          every(dset.split('|'), loopFn) && !each(delay[dset], loopFn) && (delay[dset] = [])
-        }
-      }
-    }
-    setTimeout(function () {
-      each(paths, function loading(path, force) {
-        if (path === null) return callback()
-        
-        if (!force && !/^https?:\/\//.test(path) && scriptpath) {
-          path = (path.indexOf('.js') === -1) ? scriptpath + path + '.js' : scriptpath + path;
-        }
-        
-        if (scripts[path]) {
-          if (id) ids[id] = 1
-          return (scripts[path] == 2) ? callback() : setTimeout(function () { loading(path, true) }, 0)
-        }
-
-        scripts[path] = 1
-        if (id) ids[id] = 1
-        create(path, callback)
-      })
-    }, 0)
-    return $script
-  }
-
-  function create(path, fn) {
-    var el = doc.createElement('script'), loaded
-    el.onload = el.onerror = el[onreadystatechange] = function () {
-      if ((el[readyState] && !(/^c|loade/.test(el[readyState]))) || loaded) return;
-      el.onload = el[onreadystatechange] = null
-      loaded = 1
-      scripts[path] = 2
-      fn()
-    }
-    el.async = 1
-    el.src = urlArgs ? path + (path.indexOf('?') === -1 ? '?' : '&') + urlArgs : path;
-    head.insertBefore(el, head.lastChild)
-  }
-
-  $script.get = create
-
-  $script.order = function (scripts, id, done) {
-    (function callback(s) {
-      s = scripts.shift()
-      !scripts.length ? $script(s, id, done) : $script(s, callback)
-    }())
-  }
-
-  $script.path = function (p) {
-    scriptpath = p
-  }
-  $script.urlArgs = function (str) {
-    urlArgs = str;
-  }
-  $script.ready = function (deps, ready, req) {
-    deps = deps[push] ? deps : [deps]
-    var missing = [];
-    !each(deps, function (dep) {
-      list[dep] || missing[push](dep);
-    }) && every(deps, function (dep) {return list[dep]}) ?
-      ready() : !function (key) {
-      delay[key] = delay[key] || []
-      delay[key][push](ready)
-      req && req(missing)
-    }(deps.join('|'))
-    return $script
-  }
-
-  $script.done = function (idOrDone) {
-    $script([null], idOrDone)
-  }
-
-  return $script
-});
-
 },{}],8:[function(require,module,exports){
 (function (global){
 'use strict';
@@ -1498,159 +1685,207 @@ Object.defineProperty(exports, '__esModule', {
   value: true
 });
 
+var _createClass = (function () { function defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ('value' in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } } return function (Constructor, protoProps, staticProps) { if (protoProps) defineProperties(Constructor.prototype, protoProps); if (staticProps) defineProperties(Constructor, staticProps); return Constructor; }; })();
+
+var _get = function get(_x, _x2, _x3) { var _again = true; _function: while (_again) { var object = _x, property = _x2, receiver = _x3; _again = false; if (object === null) object = Function.prototype; var desc = Object.getOwnPropertyDescriptor(object, property); if (desc === undefined) { var parent = Object.getPrototypeOf(object); if (parent === null) { return undefined; } else { _x = parent; _x2 = property; _x3 = receiver; _again = true; desc = parent = undefined; continue _function; } } else if ('value' in desc) { return desc.value; } else { var getter = desc.get; if (getter === undefined) { return undefined; } return getter.call(receiver); } } };
+
 var _extends = Object.assign || function (target) { for (var i = 1; i < arguments.length; i++) { var source = arguments[i]; for (var key in source) { if (Object.prototype.hasOwnProperty.call(source, key)) { target[key] = source[key]; } } } return target; };
 
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { 'default': obj }; }
+
+function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError('Cannot call a class as a function'); } }
+
+function _inherits(subClass, superClass) { if (typeof superClass !== 'function' && superClass !== null) { throw new TypeError('Super expression must either be null or a function, not ' + typeof superClass); } subClass.prototype = Object.create(superClass && superClass.prototype, { constructor: { value: subClass, enumerable: false, writable: true, configurable: true } }); if (superClass) Object.setPrototypeOf ? Object.setPrototypeOf(subClass, superClass) : subClass.__proto__ = superClass; }
+
+var _react = (typeof window !== "undefined" ? window['React'] : typeof global !== "undefined" ? global['React'] : null);
+
+var _react2 = _interopRequireDefault(_react);
 
 var _reactSelect = require('react-select');
 
 var _reactSelect2 = _interopRequireDefault(_reactSelect);
 
-var _scriptjs = require('scriptjs');
+var _littleLoader = require('little-loader');
 
-var _scriptjs2 = _interopRequireDefault(_scriptjs);
+var _littleLoader2 = _interopRequireDefault(_littleLoader);
 
-var React = (typeof window !== "undefined" ? window['React'] : typeof global !== "undefined" ? global['React'] : null);
+var SelectGooglePlaces = (function (_React$Component) {
+  _inherits(SelectGooglePlaces, _React$Component);
 
-var SelectGooglePlaces = React.createClass({
-  displayName: 'SelectGooglePlaces',
+  function SelectGooglePlaces(props) {
+    _classCallCheck(this, SelectGooglePlaces);
 
-  propTypes: {
-    multi: React.PropTypes.bool, // Single or multiple places selection
-    language: React.PropTypes.string, // Language code for loading Google Maps API
-    country: React.PropTypes.string, // ISO 3166-1 Alpha-2 country code for limiting results
-    types: React.PropTypes.array, // Types of results to be displayed
-    // See https://developers.google.com/places/supported_types#table3
-    formatName: React.PropTypes.func, // Receives the result placesService.getDetails() and returns a formatted name
-    // See https://developers.google.com/maps/documentation/javascript/3.exp/reference#PlaceResult
-    onChange: React.PropTypes.func, // onChange handler: function (newValue) {}
-    optionsForSelect: React.PropTypes.object, // See https://github.com/JedWatson/react-select#further-options
-    initialValue: React.PropTypes.any
-  },
-
-  getDefaultProps: function getDefaultProps() {
-    return {
-      language: 'en',
-      country: 'USA',
-      types: ['(cities)'],
-      formatName: function formatName(placeResult) {
-        return placeResult.address_components[0].long_name;
-      },
-      optionsForSelect: {
-        multi: true,
-        cache: false,
-        name: 'places'
-      },
-      onChange: function onChange(value) {},
-      initialValue: null
-    };
-  },
-
-  getInitialState: function getInitialState() {
-    return {
+    _get(Object.getPrototypeOf(SelectGooglePlaces.prototype), 'constructor', this).call(this, props);
+    this.getPredictions = this.getPredictions.bind(this);
+    this.onChange = this.onChange.bind(this);
+    this.state = {
       value: this.props.initialValue,
       autocompleteService: null,
-      placesService: null
+      placesService: null,
+      googleMapsLoading: false
     };
-  },
+  }
 
-  componentDidMount: function componentDidMount() {
-    var _this = this;
+  _createClass(SelectGooglePlaces, [{
+    key: 'componentWillMount',
+    value: function componentWillMount() {
+      var _this = this;
 
-    if (typeof window.google === 'undefined') {
-      window.googleMapsLoaded = function () {
-        _scriptjs2['default'].done('google-maps-places');
-      };
+      if (typeof window.google === 'undefined') {
+        var _props = this.props;
+        var language = _props.language;
+        var apiKey = _props.apiKey;
 
-      (0, _scriptjs2['default'])('https://maps.googleapis.com/maps/api/js?libraries=places&language=' + this.props.language, 'google-maps-places');
-      _scriptjs2['default'].ready('google-maps-places', function () {
-        _this.handleLoaded(google.maps);
-      });
-    } else {
-      this.handleLoaded(google.maps);
-    }
-  },
-
-  handleLoaded: function handleLoaded(googleMaps) {
-    this.setState({
-      autocompleteService: new googleMaps.places.AutocompleteService(),
-      placesService: new googleMaps.places.PlacesService(this.refs.attributions)
-    });
-  },
-
-  onChange: function onChange(value) {
-    var _this2 = this;
-
-    var selectedPlace = undefined;
-    if (value && value.constructor === Array) {
-      selectedPlace = value[value.length - 1];
-    } else {
-      selectedPlace = value;
-    }
-
-    // Once a place is selected, fetch more data for it (long_name, lat, lng, etc.)
-    if (selectedPlace) {
-      this.processPlace(selectedPlace, function () {
-        _this2.setState({ value: value });
-        if (_this2.props.onChange) {
-          _this2.props.onChange(value);
-        }
-      });
-    } else {
-      this.setState({ value: value });
-      this.props.onChange(value);
-    }
-  },
-
-  processPlace: function processPlace(autocompletePrediction, callback) {
-    var _this3 = this;
-
-    if (!autocompletePrediction.place_id) {
-      callback();
-      return;
-    }
-    this.state.placesService.getDetails({ placeId: autocompletePrediction.place_id }, function (placeResult) {
-      autocompletePrediction = _extends(autocompletePrediction, placeResult);
-      autocompletePrediction.name = _this3.props.formatName(placeResult);
-      callback();
-    });
-  },
-
-  getPredictions: function getPredictions(input, callback) {
-    if (this.state.autocompleteService && input) {
-      var geocoderRequest = {
-        input: input,
-        types: this.props.types,
-        componentRestrictions: {
-          country: this.props.country
-        }
-      };
-      this.state.autocompleteService.getPlacePredictions(geocoderRequest, function (data) {
-        // Copy description into the name attribute
-        if (data) {
-          data.map(function (result) {
-            result.name = result.description;
+        if (window.googleMapsLoading) {
+          this.waitForGoogleAPI();
+        } else {
+          window.googleMapsLoading = true;
+          (0, _littleLoader2['default'])('https://maps.googleapis.com/maps/api/js?libraries=places&language=' + language + '&key=' + apiKey, function (err) {
+            if (!err) {
+              window.googleMapsLoading = false;
+              _this.handleLoaded(window.google.maps);
+            }
           });
         }
-        callback(null, { options: data, complete: false });
+      } else {
+        this.handleLoaded(window.google.maps);
+      }
+    }
+  }, {
+    key: 'waitForGoogleAPI',
+    value: function waitForGoogleAPI() {
+      var _this2 = this;
+
+      setTimeout(function () {
+        if (!window.googleMapsLoading) {
+          _this2.handleLoaded(window.google.maps);
+        }
+      }, 300);
+    }
+  }, {
+    key: 'onChange',
+    value: function onChange(value) {
+      var _this3 = this;
+
+      var selectedPlace = undefined;
+      if (value && value.constructor === Array) {
+        selectedPlace = value[value.length - 1];
+      } else {
+        selectedPlace = value;
+      }
+
+      // Once a place is selected, fetch more data for it (long_name, lat, lng, etc.)
+      if (selectedPlace) {
+        this.processPlace(selectedPlace, function () {
+          _this3.setState({ value: value });
+          if (_this3.props.onChange) {
+            _this3.props.onChange(value);
+          }
+        });
+      } else {
+        this.setState({ value: value });
+        this.props.onChange(value);
+      }
+    }
+  }, {
+    key: 'getPredictions',
+    value: function getPredictions(input, callback) {
+      if (this.state.autocompleteService && input) {
+        var geocoderRequest = {
+          input: input,
+          types: this.props.types,
+          componentRestrictions: {
+            country: this.props.country
+          }
+        };
+        this.state.autocompleteService.getPlacePredictions(geocoderRequest, function (data) {
+          // Copy description into the name attribute
+          if (data) {
+            data.map(function (result) {
+              result.label = result.description;
+              result.value = result.description;
+            });
+          }
+          callback(null, { options: data, complete: false });
+        });
+      } else {
+        callback(null, { options: [], complete: false });
+      }
+    }
+  }, {
+    key: 'processPlace',
+    value: function processPlace(autocompletePrediction, callback) {
+      var _this4 = this;
+
+      if (!autocompletePrediction.place_id) {
+        callback();
+        return;
+      }
+      this.state.placesService.getDetails({ placeId: autocompletePrediction.place_id }, function (placeResult) {
+        autocompletePrediction = _extends(autocompletePrediction, placeResult);
+        autocompletePrediction.name = _this4.props.formatName(placeResult);
+        callback();
       });
     }
-    callback(null, { options: [], complete: false });
-  },
+  }, {
+    key: 'handleLoaded',
+    value: function handleLoaded(googleMaps) {
+      this.setState({
+        autocompleteService: new googleMaps.places.AutocompleteService(),
+        placesService: new googleMaps.places.PlacesService(this.attributionsEl)
+      });
+    }
+  }, {
+    key: 'render',
+    value: function render() {
+      var _this5 = this;
 
-  render: function render() {
-    return React.createElement(
-      'div',
-      null,
-      React.createElement(_reactSelect2['default'].Async, _extends({ value: this.state.value, valueKey: 'name', labelKey: 'name', loadOptions: this.getPredictions, onChange: this.onChange }, this.props.optionsForSelect)),
-      React.createElement('div', { ref: 'attributions' })
-    );
-  }
-});
+      return _react2['default'].createElement(
+        'span',
+        null,
+        _react2['default'].createElement(_reactSelect2['default'].Async, _extends({ value: this.state.value, loadOptions: this.getPredictions, onChange: this.onChange }, this.props.optionsForSelect)),
+        _react2['default'].createElement('div', { ref: function (el) {
+            return _this5.attributionsEl = el;
+          } })
+      );
+    }
+  }]);
+
+  return SelectGooglePlaces;
+})(_react2['default'].Component);
+
+SelectGooglePlaces.propTypes = {
+  apiKey: _react2['default'].PropTypes.string, // API Key
+  language: _react2['default'].PropTypes.string, // Language code for loading Google Maps API
+  country: _react2['default'].PropTypes.string, // ISO 3166-1 Alpha-2 country code for limiting results
+  types: _react2['default'].PropTypes.array, // Types of results to be displayed
+  // See https://developers.google.com/places/supported_types#table3
+  formatName: _react2['default'].PropTypes.func, // Receives the result placesService.getDetails() and returns a formatted name
+  // See https://developers.google.com/maps/documentation/javascript/3.exp/reference#PlaceResult
+  onChange: _react2['default'].PropTypes.func, // onChange handler: function (newValue) {}
+  optionsForSelect: _react2['default'].PropTypes.object, // See https://github.com/JedWatson/react-select#further-options
+  initialValue: _react2['default'].PropTypes.any
+};
+
+SelectGooglePlaces.defaultProps = {
+  language: 'en',
+  country: 'USA',
+  types: ['(cities)'],
+  formatName: function formatName(placeResult) {
+    return placeResult.address_components[0].long_name;
+  },
+  optionsForSelect: {
+    multi: false,
+    cache: false,
+    name: 'places'
+  },
+  onChange: function onChange() {},
+  initialValue: null
+};
 
 exports['default'] = SelectGooglePlaces;
 module.exports = exports['default'];
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"react-select":4,"scriptjs":7}]},{},[8])(8)
+},{"little-loader":1,"react-select":5}]},{},[8])(8)
 });
