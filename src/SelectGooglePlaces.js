@@ -118,7 +118,7 @@ class SelectGooglePlaces extends React.Component {
 }
 
 SelectGooglePlaces.propTypes = {
-  apiKey: React.PropTypes.string, // API Key
+  apiKey: React.PropTypes.string.isRequired, // API Key
   language: React.PropTypes.string,          // Language code for loading Google Maps API
   country: React.PropTypes.string,           // ISO 3166-1 Alpha-2 country code for limiting results
   types: React.PropTypes.array,              // Types of results to be displayed
