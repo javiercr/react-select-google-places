@@ -15,7 +15,7 @@ class SelectGooglePlaces extends React.Component {
     };
   }
 
-  componentWillMount() {
+  componentDidMount() {
     if (typeof window.google === 'undefined') {
       const { language, apiKey } = this.props;
       if (window.googleMapsLoading) {
